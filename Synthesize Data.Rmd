@@ -1,0 +1,295 @@
+---
+title: "Synthesize Data"
+output: html_notebook
+---
+
+This is a notebook to synthesize NTT Data datasets for a Cincinnati Society for
+People Analytics Meetup on Thursday, December 12, 2024 at 12:00 PM at Mid
+Pointe Library in West Chester, OH.
+
+
+
+```{r Check for installed Packages, message = FALSE}
+
+ipak <- function(pkg) {
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg))
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+packages <- c("synthpop", "tidyverse", "performance", "effectsize", "see",
+              "patchwork", "knitr", "kableExtra", "readxl", "janitor", "openxlsx")
+
+ipak(packages)
+```
+
+```{r Pull in original data, message = FALSE}
+
+# Read PeopleBest Data
+df_peoplebest_traits <- 
+  read_xlsx("./Data/NTT (12_3) w Part A Traits.xlsx", 
+            sheet = "Traits")
+
+df_peoplebest_traits_ids <- df_peoplebest_traits$id * 3
+
+df_peoplebest_traits <-
+  df_peoplebest_traits |>
+  select(completed_at,
+         job_name,
+         ends_with("-part-b")) |>
+  as.data.frame() |>
+  mutate(
+    completed_at = as_datetime(completed_at),
+    job_name = as.factor(job_name))
+
+df_peoplebest_traits_colnames <- colnames(df_peoplebest_traits)
+
+df_peoplebest_traits <- df_peoplebest_traits |> clean_names()
+####################################################################
+
+df_peoplebest_competencies <-
+  read_xlsx("./Data/NTT (12_3) w Part A Traits.xlsx", 
+            sheet = "Competencies")
+
+df_peoplebest_competencies_ids <- df_peoplebest_competencies$id * 3
+
+df_peoplebest_competencies <-
+  df_peoplebest_competencies|>
+  select(`Creator Path - Self Concept Style`:`Producer Path - Work Style`) |>
+  as.data.frame()
+
+df_peoplebest_competencies_colnames <- colnames(df_peoplebest_competencies)
+
+df_peoplebest_competencies <- df_peoplebest_competencies |> clean_names()
+
+####################################################################
+
+# Read bridge table for PeopleBest & SAP Success Factors
+df_bridge_synth <- 
+  read_xlsx("./Data/PeopleBest ID Person ID Bridge.xlsx", 
+            sheet = 1) |>
+  transmute(pb_id = pb_id * 3,
+         person_id = person_id * 2)|>
+  as.data.frame()
+
+####################################################################
+
+# Read Master file from SAP Success Factors
+df_master <- 
+  read_csv("./Data/Master.csv") 
+
+df_master_ids <- df_master$`Person ID` * 2
+
+df_master <-
+  df_master |>
+  select(-`Person ID`,
+         -`First Name`,
+         -`Last Name`,
+#         -`Manager User Sys ID`,
+#         -`Position Title`,
+#         -`Employment Details Recent Hire Date`,
+#         -`Department`,
+         -`Department Name`,
+         -RolePK,
+         -`Radford PK`,
+         ) |>
+  as.data.frame() |>
+  transmute(
+    `Employee Status` = as.factor(`Employee Status`),
+    Gender = as.factor(Gender),
+    `Cost Center` = as.factor(`Cost Center`),
+    `Employee Level` = as.factor(`Employee Level`),
+    Profession = as.factor(Profession),
+    `Employment Details Original Hire Date` = mdy(`Employment Details Original Hire Date`),
+    `Employment Details Termination Date` = mdy(if_else(
+                                                  `Employment Details Termination Date` == "null", 
+                                                  NA, 
+                                                  `Employment Details Termination Date`)),
+    `Manager User Sys ID` = as.factor(`Manager User Sys ID`),
+    `Position Entry Date` = mdy(if_else(
+                                                  `Position Entry Date` == "null", 
+                                                  NA, 
+                                                  `Position Entry Date`)),
+    `Position Title` = as.factor(`Position Title`),
+    `Employment Details Recent Hire Date` = mdy(`Employment Details Recent Hire Date`),
+    `United States Global Information Ethnic Group` = as.factor(`United States Global Information Ethnic Group`),
+    `Date Of Birth` = mdy(`Date Of Birth`),
+    `Employment Details Local Seniority Date` = mdy(`Employment Details Local Seniority Date`),
+    Department = as.factor(Department),
+#    `Department Name` = as.factor(`Department Name`),
+    CC = as.factor(CC),
+    Level = as.factor(Level),
+#    RolePK = as.factor(RolePK),
+    `Level Numeral` = as.factor(`Level Numeral`),
+#    `Radford PK` = as.factor(`Radford PK`)
+  )
+
+df_master_colnames <- colnames(df_master)
+
+df_master <- df_master |> clean_names()
+
+####################################################################
+
+# Read Termination Data
+df_terms <- 
+  read_csv("./Data/Term Data.csv")
+
+df_terms_ids <- df_terms$ID * 2
+
+df_terms <- df_terms |>
+  select(-ID,
+         -Name,
+         -`Reason Description`) |>
+  as.data.frame() |>
+  mutate(
+    `End date` = dmy(`End date`),
+    Desirable = as.factor(Desirable),
+    Choice = as.factor(Choice),
+    TermType = as.factor(TermType),
+    `Reason Code` = as.factor(`Reason Code`),
+    #`Reason Description` = as.factor(`Reason Description`)
+  )
+
+df_terms_colnames <- colnames(df_terms)
+
+df_terms <- df_terms |> clean_names()
+
+####################################################################
+
+# Read Performance Data
+df_perf <- 
+  read_csv("./Data/Talent Review.csv") 
+
+df_perf_ids <- df_perf$`User/Employee ID` * 2
+
+df_perf <- df_perf |>
+  select(-`User/Employee ID`) |>
+  as.data.frame() |>
+  mutate(
+    across(everything(), as.factor)
+  )
+
+df_perf_colnames <- colnames(df_perf)
+
+df_perf <- df_perf |> clean_names()
+
+```
+
+Now, we need to handle ids in a special way because this demonstration relies on helpful joins.
+
+```{r Codebook and synthesize}
+
+my_seed <- 2024
+
+# Put data frames in a named list
+real_data <- list(
+  df_peoplebest_traits = df_peoplebest_traits, 
+  df_peoplebest_competencies = df_peoplebest_competencies, 
+#  df_master = df_master, 
+  df_terms = df_terms, 
+  df_perf = df_perf
+)
+
+for (df_name in names(real_data)) {
+  df <- real_data[[df_name]]
+  codebook.syn(df)
+  
+  synthesized_data <- syn(df, 
+                          seed = my_seed)$syn
+  
+  # Retrieve the corresponding column names vector
+  colname_vector_name <- paste0(df_name, "_colnames")
+  
+  # Check if the colname vector exists
+  if (exists(colname_vector_name, envir = .GlobalEnv)) {
+    colname_vector <- get(colname_vector_name, envir = .GlobalEnv)
+    colnames(synthesized_data) <- colname_vector
+  } else {
+    warning(paste("No column name vector found for", df_name, "using default column names."))
+  }
+  
+  id_vector_name <- paste0(df_name, "_ids")
+    # Check if the ids vector exists
+  if (exists(id_vector_name, envir = .GlobalEnv)) {
+    id_vector <- get(id_vector_name, envir = .GlobalEnv)
+    synthesized_data <- bind_cols(id_vector, synthesized_data)
+  } else {
+    warning(paste("No column name vector found for", df_name, "using default column names."))
+  }
+  
+  # Save each synthesized dataset as a variable with "_synth" appended
+  assign(paste0(df_name, "_synth"), synthesized_data)
+}
+
+# Suppose df is your data frame
+method_vec <- rep("sample", ncol(df_master))
+names(method_vec) <- colnames(df_master)
+
+df_master_synth <- syn(df_master,
+                  seed = my_seed,
+                  method = method_vec)$syn
+
+colnames(df_master_synth) <- df_master_colnames
+
+df_master_synth <-
+  df_master_ids |>
+  bind_cols(df_master_synth)|>
+  rename(`Person ID` = 1)
+
+```
+
+```{r Add Id names back, message = FALSE}
+
+df_peoplebest_traits_synth <-
+  df_peoplebest_traits_synth |>
+  rename(`id` = 1)
+
+df_peoplebest_competencies_synth <-
+  df_peoplebest_competencies_synth |>
+  rename(`id` = 1)
+
+df_terms_synth <-
+  df_terms_synth |>
+  rename(ID = 1)
+
+df_perf_synth <-
+  df_perf_synth |>
+  rename(`User/Employee ID` = 1)
+
+```
+
+Save the demo data
+
+```{r Save demo data}
+
+# Ensure the directory exists (create it if not)
+dir.create("./Demo/Data", showWarnings = FALSE, recursive = TRUE)
+
+write_csv(df_master_synth, file = "./Demo/Data/Master Demo.csv")
+
+write_csv(df_terms_synth, file = "./Demo/Data/Term Data Demo.csv")
+
+write_csv(df_perf_synth, file = "./Demo/Data/Talent Review Demo.csv")
+
+# Create a new workbook for PeopleBest
+wb <- createWorkbook()
+
+# Add the "Traits" worksheet and write df_peoplebest_traits_synth to it
+addWorksheet(wb, "Traits")
+writeData(wb, "Traits", df_peoplebest_traits_synth)
+
+# Add the "Competencies" worksheet and write df_peoplebest_competencies_synth to it
+addWorksheet(wb, "Competencies")
+writeData(wb, "Competencies", df_peoplebest_competencies_synth)
+
+# Save the workbook
+saveWorkbook(wb, "./Demo/Data/NTT Traits Demo.xlsx", overwrite = TRUE)
+
+# Create a new workbook for Bridge
+wb <- createWorkbook()
+addWorksheet(wb, "Sheet1")
+writeData(wb, 1, df_bridge_synth)
+saveWorkbook(wb, "./Demo/Data/PeopleBest ID Person ID Bridge Demo.xlsx", overwrite = TRUE)
+
+```

@@ -1,0 +1,688 @@
+---
+title: "NTT PeopleBest Medallion"
+author: "Bernard Voss"
+date: "2024-12-02"
+output: 
+  html_document:
+    toc: TRUE
+    code_folding: "hide"
+---
+### Pull in Data, Clean, Transform
+
+Data was combined from several spreadsheets:
+1. PeopleBest Assessment Excel Spreadsheet with trait and competency scores.
+    Most recent scores were used for analysis as predictors of outcome variables.
+2. SAP Employee file with general information updated monthly. This was used to
+    create a bridge table to link PeopleBest records to Employee data.
+3. Turnover Excel Spreadsheet that contains detailed turnover information,
+    including multiple categorical data points. These data were used as an
+    outcome variable to be examined. Turnover was defined as having a Choice
+    value of "Involuntary" and a "Terminated" Term Type. If any records met 
+    the criteria for Turnover but was also listed as "Active" in the SAP 
+    Employee file, a table is presented with the EE info below.
+4. Performance & Potential Excel Spreadsheet with manager ratings.These data
+    were used as an outcome variable to be examined. The most recent rating
+    was used as the outcome.
+    
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(readxl)
+library(readr)
+library(janitor)
+library(knitr)
+library(kableExtra)
+```
+
+## Medallion Architecture
+
+### Bronze Layer: Data Ingestion
+In the Bronze layer, we ingest raw data from various sources without applying any transformations. This raw data is saved for record-keeping and potential reprocessing
+
+```{r Bronze, message= FALSE}
+# Bronze Layer: Data Ingestion
+# Create directories for data storage if they don't exist
+dir.create("Data/Bronze", 
+           showWarnings = FALSE, 
+           recursive = TRUE)
+
+# Read PeopleBest Data
+df_peoplebest_traits <- 
+  read_xlsx("Data/NTT Traits Demo.xlsx", 
+            sheet = "Traits")
+
+# Print a Preview for the audience:
+print(head(df_peoplebest_traits))
+
+df_peoplebest_competencies <-
+  read_xlsx("Data/NTT Traits Demo.xlsx", 
+            sheet = "Competencies")
+
+# PeopleBest dimension structure:
+df_peoplebest_trait_definitions <- 
+  read_excel("Data/PeopleBest Traits & Dimensions.xlsx",
+             sheet = "Traits")
+
+df_peoplebest_dimension_definitions <- 
+  read_excel("Data/PeopleBest Traits & Dimensions.xlsx",
+             sheet = "Dimensions")
+
+# Read bridge table for PeopleBest & SAP Success Factors
+df_bridge <- 
+  read_xlsx("Data/PeopleBest ID Person ID Bridge Demo.xlsx", 
+            sheet = 1)
+
+# Read Master file from SAP Success Factors
+df_master <- 
+  read_csv("Data/Master Demo.csv")
+
+# Read Termination Data
+df_terms <- 
+  read_csv("Data/Term Data Demo.csv")
+
+# Read Performance Data
+df_perf <- 
+  read_csv("Data/Talent Review Demo.csv")
+
+# Save raw data as RDS files
+saveRDS(df_peoplebest_traits, 
+        file = "Data/Bronze/df_peoplebest_traits_demo.rds")
+
+saveRDS(df_peoplebest_competencies, 
+        file = "Data/Bronze/df_peoplebest_competencies_demo.rds")
+
+saveRDS(df_peoplebest_trait_definitions,
+        file = "Data/Bronze/df_peoplebest_trait_definitions_demo.rds")
+
+saveRDS(df_peoplebest_dimension_definitions,
+        file = "Data/Bronze/df_peoplebest_dimension_definitions_demo.rds")
+
+saveRDS(df_bridge, 
+        file = "Data/Bronze/df_bridge_demo.rds")
+
+saveRDS(df_master, 
+        file = "Data/Bronze/df_master_demo.rds")
+
+saveRDS(df_terms, 
+        file = "Data/Bronze/df_terms_demo.rds")
+
+saveRDS(df_perf, 
+        file = "Data/Bronze/df_perf_demo.rds")
+
+```
+
+`{r head(df_perf)}`
+
+### Silver Layer: Data Cleaning and Transformation
+In the Silver layer, we clean the data and apply necessary transformations to prepare it for analysis. Explicitly define the variables included in each dataframe.
+
+First, we create the directory for the silver layer.
+```{r Silver Layer Creation, message=FALSE}
+
+# Create directories for data storage if they don't exist
+dir.create("Data/Silver", 
+           showWarnings = FALSE, 
+           recursive = TRUE)
+
+```
+
+We'll start with the PeopleBest dataset and modeling info. The process below
+focuses on forced-choice trait scores. Later, traits will be summed by 
+dimension to produce dimension scores.
+
+```{r Silver - PeopleBest Traits, Dimensions, & Competencies, message=FALSE}
+# Clean df_peoplebest_traits and split into normative (Likert) & ipsative 
+#   (forced-choice) data frames for separate analysis
+
+df_peoplebest_traits_clean <-
+  df_peoplebest_traits |>
+  # Clean column names (do this for all data)
+  clean_names() |>
+  # Focus only on Consultants, since there's not enough data in the other
+  # categories
+  filter(job_name == "Consultant")
+
+kable(df_peoplebest_traits |> 
+        clean_names() |> 
+        group_by(job_name) |> 
+        count(sort=TRUE))
+
+
+# Here's the ipsative/forced choice scale dataframe
+df_peoplebest_traits_forced_choice_ipsative_clean <- 
+  df_peoplebest_traits_clean |>
+  # Clean column names (do this for all data)
+  clean_names() |>
+  # Select only the 
+  select(
+    id,
+    completed_at,
+    job_name,
+    ends_with("_part_b")
+  ) |>
+  rename_with(
+    ~ str_remove(., 
+                 "_part_b")
+    ) |>
+  # Specify which variables are included in the tibble
+  select(
+    id,
+    completed_at,
+    job_name,
+    empathy,
+    agreement,
+    humility,
+    collaboration,
+    trust_of_others,
+    compliance,
+    self_responsibility,
+    structure,
+    goal_oriented,
+    follow_through,
+    deliberateness,
+    self_assurance,
+    friendliness,
+    sociability,
+    vitality,
+    influence,
+    take_charge,
+    tact,
+    worry,
+    emotion,
+    crisis_response,
+    recovery_time,
+    intensity,
+    creativity,
+    learning,
+    change_response,
+    detail_orientation,
+    decisiveness,
+    mobility
+  )
+
+# Show the head of the dataframe
+kable(head(df_peoplebest_traits_forced_choice_ipsative_clean[,1:6]))
+
+# Clean df_peoplebest_competencies
+df_peoplebest_competencies_clean <- 
+  df_peoplebest_competencies |>
+  # Use developer friendly variable names
+  clean_names() |>
+  # Call out which variables will be included in the tibble
+  select(
+    id,
+    creator_path_engagement_style,
+    creator_path_engagement_style,
+    creator_path_interpersonal_style,
+    creator_path_work_style,
+    creator_path_overall_score,
+    producer_path_self_concept_style,
+    producer_path_engagement_style,
+    producer_path_interpersonal_style,
+    producer_path_work_style,
+    producer_path_overall_score
+  )
+```
+
+Here, we can see the PeopleBest trait definitions and their corresponding
+dimensions.
+
+```{r Silver - PeopleBest Trait & Dimension Specifications, message = FALSE}
+# Clean Trait Definitions
+df_peoplebest_trait_definitions_clean <-
+  df_peoplebest_trait_definitions |>
+  # Clean Variable Names
+  clean_names() |>
+  # Fix people_best to be peoplebest
+  rename(peoplebest_dimension_code = people_best_dimension_code,
+         trait_definition = definition)|>
+  # Prepare trait to be joined on after traits are pivoted. This will be
+  # necessary in order to aggregate by dimension after first joining on
+  # dimension.
+  mutate(
+    trait = trait |>
+      str_to_lower() |>
+      str_trim() |>
+      str_replace_all("[^a-z0-9]+", "_") |>
+      str_replace_all("_+", "_")
+  )
+
+# Clean Dimension Definitions
+df_peoplebest_dimension_definitions_clean <-
+  df_peoplebest_dimension_definitions |>
+  # Clean variable names
+  clean_names() |>
+  # Fix people_best to be peoplebest
+  rename(peoplebest_dimension_code = people_best_dimension_code,
+         dimension_definition = definition)
+
+kable(df_peoplebest_dimension_definitions_clean)
+
+# Clean Traits & dimensions in the same table
+df_peoplebest_traits_dimensions_definitions_clean <- 
+  df_peoplebest_trait_definitions_clean |>
+  left_join(
+    df_peoplebest_dimension_definitions_clean, 
+    by = c("peoplebest_dimension_code")
+  )
+
+kable(df_peoplebest_traits_dimensions_definitions_clean |> select(id, trait, trait_definition, dimension))
+```
+
+PeopleBest Personality Dimensions are aggregated here.
+
+```{r Silver - PeopleBest Dimension Totals (ipsative/forced choice), message = FALSE}
+# Transform the data for analysis and summarize by dimension for analysis
+#    Use the forced-choice answers for this analysis
+df_peoplebest_traits_forced_choice_ipsative_unpivoted <- 
+  df_peoplebest_traits_forced_choice_ipsative_clean |>
+  # Select the trait scores
+  select(id, empathy:mobility) |>
+  # Unpivot the columns into two columns so they can be summed and grouped by
+  #   PeopleBest Dimension.
+  pivot_longer(empathy:mobility,
+               names_to = "trait",
+               values_to = "value") 
+
+# Sum trait scores by dimension
+df_peoplebest_dimension_scores_forced_choice_ipsative_clean <-
+  df_peoplebest_traits_forced_choice_ipsative_unpivoted |>
+  # Join to the trait definitions based on trait name. 
+  left_join(df_peoplebest_traits_dimensions_definitions_clean,
+            by = "trait",
+              # Add suffixes to matching variables (most importantly, id)
+            suffix = c("_pb", "_t")) |>
+  # Sum up the trait scores, grouped by participant (id_pb) and 
+  # PeopleBest Dimension (dimension).
+  summarize(total = sum(value), 
+            .by = c("id_pb", "dimension")) |>
+  # Pivot the dimension scores out so there's only one row per participant.
+  # Note: Power BI could use this unpivoted, for a fact table.
+  pivot_wider(names_from = "dimension",
+              values_from = "total",
+              names_prefix = "d_") |>
+  # Clean up newly pivoted PeopleBest Dimension names
+  clean_names()
+
+# Save the data
+saveRDS(df_peoplebest_dimension_scores_forced_choice_ipsative_clean, 
+        file = "Data/Silver/df_peoplebest_dimension_scores_forced_choice_ipsative_clean_demo.rds")
+
+# Show the unpivoted data as an example for a Fact Table
+kable(head(df_peoplebest_traits_forced_choice_ipsative_unpivoted, n = 30))
+
+kable(head(df_peoplebest_dimension_scores_forced_choice_ipsative_clean))
+
+```
+
+The Bridge table was developed with tight collaboration between N Solutions and
+NTT people data infrastructure owners. In the future, PeopleBest assessment ID's
+could be attached to employee records in SAP to foster data integration.
+
+``` {r Silver - Bridge Table, message=FALSE}
+# Clean df_bridge --> Creating this bridge table was a whole process
+df_bridge_clean <- 
+  df_bridge |>
+  select(
+    pb_id,
+    person_id
+  )
+# Save cleaned data as RDS
+saveRDS(df_bridge_clean, 
+        file = "Data/Silver/df_bridge_clean_demo.rds")
+```
+
+The next step will clean the SAP Employee Data.
+``` {r Silver - Master EE Table, message=FALSE}
+# Clean df_master
+df_master_clean <- 
+  df_master |>
+  # clean up column names
+  clean_names() |>
+  # get rid of useless prefixes
+  rename_with(~ str_remove(., "employment_details_")) |>
+  # Explicitly select the variables to include
+  select(
+    person_id,
+    employee_status,
+    cost_center,
+    employee_level,
+    profession,
+    original_hire_date,
+    termination_date,
+    manager_user_sys_id,
+    position_entry_date, # this might be relevant for filtering performance rating scores
+    position_title,
+    recent_hire_date,
+    department,
+    cc,
+    level
+  )|>
+  # Filter out fake "test" records
+  filter(!str_detect(tolower(position_title), "test"),
+         profession %in% c("Consulting", "Hosting Services", "Remote Services")) 
+
+# Save cleaned data as RDS
+
+saveRDS(df_master_clean, 
+        file = "Data/Silver/df_master_clean_demo.rds")
+
+```
+
+Here, we will present a table if there are any Active Employee Records with 
+a termination record.
+
+```{r Active Involuntary Terminations, message = FALSE, include=FALSE} 
+df_master_clean <- 
+  readRDS("Data/Silver/df_master_clean_demo.rds")
+
+df_active_involuntary_terms <- df_master_clean |>
+  inner_join(df_terms |> clean_names(), by = c("person_id" = "id")) |>
+  filter(employee_status == "Active",
+         choice == "Involuntary",
+         term_type == "Termination") |> 
+  select(
+    person_id, 
+    #name, 
+    employee_status, 
+    desirable, 
+    choice, 
+    term_type, 
+    reason_code, 
+    end_date,
+    original_hire_date, 
+    termination_date, 
+    recent_hire_date, 
+    #local_seniority_date
+    ) |> 
+  arrange(choice, term_type) |>
+  rename_with(~ str_to_title(str_replace_all(., "_", " ")))
+
+# If there are any unusual records, print them and note that they will be
+# analyzed as non-terminations. 
+if (nrow(df_active_involuntary_terms) > 0) {
+kbl(df_active_involuntary_terms, 
+    caption = "Employee Records with an Involuntary Termination",
+    align = "c") %>%  # Center-align all columns
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),  # Add styling options
+    full_width = FALSE,  # Prevent table from spanning the full width of the page
+    font_size = 14  # Adjust font size
+  ) %>%
+  row_spec(0, bold = TRUE, background = "#D3D3D3")  # Highlight header row with bold text and light gray background
+}
+```
+
+In cleaning terminations, we use an anti-join to remove any termination records
+where there's an active employee record in SAP.
+``` {r Silver - Termination Records, message=FALSE}
+# Clean df_terms
+df_terms_clean <- 
+  df_terms |>
+  clean_names() |>
+  select(
+    id,
+    end_date,
+    desirable,
+    choice,
+    term_type,
+    reason_code
+  ) |>
+  # Remove any employees that have a termination record but are currently
+  # listed as Active.
+  anti_join(
+    df_master_clean |> filter(employee_status == "Active"),
+    by = c("id" = "person_id")
+  )
+
+# Save cleaned data as RDS file
+saveRDS(df_terms_clean, 
+        file = "Data/Silver/df_terms_clean_demo.rds")
+```
+
+Next, we clean the Performance & Potential Ratings data. We need to split the
+session column and sort by year and season to identify the most recent 
+performance rating, only, for each employee. You can see the first six records
+without the employee id.
+``` {r Silver - Performance & Potential Ratings, message=FALSE}
+# Clean df_perf
+df_perf_clean <- 
+  df_perf |>
+  clean_names() |>
+  select(
+    user_employee_id,
+    overall_performance_rating,
+    overall_potential_rating,
+    risk_of_loss,
+    impact_of_loss,
+    future_leader,
+    session
+  ) |>
+  # Filter out performance and potential ratings of zero. These ratings were
+  # set to zero because the employees were too new for a PA so it's not a
+  # meaningful number for analysis.
+  filter(overall_performance_rating != 0,
+         overall_potential_rating != 0) |>
+  # Split up the session column into season and year #################################################
+  separate(
+    session,
+    into = c("perf_rating_season", "perf_rating_year"), 
+    sep = "-",
+    remove = FALSE) |>
+  # Make the season and year columns ordered factors
+  mutate(
+    perf_rating_season = factor(perf_rating_season, 
+                                levels = c("Spring", "Summer", "Fall", "Winter"), 
+                                ordered = TRUE),
+    perf_rating_year = factor(perf_rating_year, 
+                              levels = sort(unique(perf_rating_year)))
+  ) |>
+  # Pull the most recent performance rating only
+  slice_max(order_by = tibble(perf_rating_year, perf_rating_season), 
+            n = 1,
+            # Group by employee
+            by = user_employee_id,
+            with_ties = FALSE)
+
+# Save cleaned data as RDS file
+saveRDS(df_perf_clean, 
+        file = "Data/Silver/df_perf_clean_demo.rds")
+
+kable(head(df_perf_clean |> 
+             select(-user_employee_id)))
+
+```
+
+Next, we'll merge all the datasets and address special NA Turnover values,
+since they are assumed to be retained if they do not have a termination
+record.
+We will filter out any assessment records without a matching
+employee record since this is the first time we're linking assessment records 
+to a person record. We'll also select the most recent assessment for each
+employee, now that we can tell who has taken the assessment more than once.
+
+```{r Silver - Merge all datasets}
+# Merge datasets
+df_all <- 
+  df_peoplebest_traits_forced_choice_ipsative_clean |>
+  left_join(df_peoplebest_dimension_scores_forced_choice_ipsative_clean,
+            by = c("id" = "id_pb")) |>
+  left_join(df_peoplebest_competencies_clean, 
+            by = c("id")) |>
+  left_join(df_bridge_clean, 
+            by = c("id" = "pb_id")) |>
+  # An inner join below will filter out anyone on df_bridge_clean that   ######################## Mike - need these for correcting for range restriction
+  # doesn't have a matching record on df_master_clean. It looks like some
+  # ids provided by Sara Long aren't matching up with anything in the master
+  # dataset 12/5/2024. They don't appear in the performance/potential 
+  # dataset or the Turnover dataset so I'm going to use that as a reason to
+  # filter them out.
+  inner_join(df_master_clean, 
+            by = "person_id") |>
+  left_join(df_terms_clean, 
+            by = c("person_id" = "id")) |>
+  left_join(df_perf_clean, 
+            by = c("person_id" = "user_employee_id")) 
+
+df_filtered <-
+  df_all |>
+  # Filter out any PeopleBest records that were not hired since we're 
+  # looking at turnover and performance.
+  filter(!is.na(person_id)) |>
+  # Select the most recent assessment for each employee 
+  slice_max(order_by = id, 
+            n = 1,
+            by = person_id,
+            with_ties = FALSE)|>
+  # Fix Choice
+  mutate(choice = if_else(is.na(choice), "Retained", choice),
+         choice = factor(choice, levels = c("Voluntary", "Involuntary", "Retained")),
+         term_type = if_else(is.na(term_type), "Retained", 
+                               if_else(term_type == "Temporary Assignment", 
+                                       "Deceased",
+                                       term_type)),
+         term_type = factor(term_type, levels = c("Resignation", "Termination", "Deceased", "Retained"))
+         )
+
+# Save as RDS Files
+saveRDS(df_all, 
+        file = "Data/Silver/df_all_demo.rds") # Gold
+
+# Save as RDS Files
+saveRDS(df_filtered, 
+        file = "Data/Silver/df_filtered_demo.rds") 
+```
+
+
+### Gold Layer: Data Aggregation and Feature Engineering
+In the Gold layer, we enrich with feature engineering and aggregation to create
+a final dataset ready for analysis. We'll specify the definitions of our high
+and low performance and potential groups here. We'll also define the turnover
+group.
+
+```{r Gold Layer}
+
+# Create directories for data storage if they don't exist
+dir.create("Data/Gold", 
+           showWarnings = FALSE, 
+           recursive = TRUE)
+
+# Load cleaned data
+df_filtered <- 
+  readRDS("Data/Silver/df_filtered_demo.rds")
+
+# Prepare final dataset for analysis
+df_people_gold <- df_filtered |>
+  # Create binary variables for involuntary group, high performance, and high potential
+  mutate(
+    invol_group = as.numeric(
+      if_else(
+        # We're interested in isolating cases when the choice was involuntary 
+        # and termination type was "Termination"
+        choice == "Involuntary" & term_type == "Termination", 
+        1, 
+        0,
+        # If there isn't a termination record then they should be coded as non-
+        # Involuntary Termination
+        missing = 0)),
+    # Compare max performance rating to all others. The maximum performance
+    # performance rating is 5. Leave employees without a Performance appraisal 
+    # as NA.
+    hi_perf = as.numeric(
+      if_else(
+        overall_performance_rating == 5, 
+        1, 
+        0)),
+    # High Potential groups are to be evaluated the same as performance.
+    # The maximum potential rating is 3. Leave employees without a Performance
+    # Appraisal as NA
+    hi_po = as.numeric(
+      if_else(
+        overall_potential_rating == 3, 
+        1,
+        0))
+  ) |>
+  # Explicitly list all variable names in the final dataframe
+  select(
+    person_id,
+    id, #id_pb
+    invol_group,
+    hi_perf,
+    hi_po,
+    overall_performance_rating,
+    overall_potential_rating,
+    desirable,
+    choice,
+    term_type,
+    reason_code,
+    risk_of_loss,
+    impact_of_loss,
+    future_leader,
+    perf_rating_season,
+    perf_rating_year,
+    employee_status,
+    cost_center,
+    employee_level,
+    profession,
+    original_hire_date,
+    recent_hire_date,
+    department,
+    cc,
+    level,
+    end_date,
+    completed_at,
+    job_name,
+    empathy,
+    agreement,
+    humility,
+    collaboration,
+    trust_of_others,
+    compliance,
+    self_responsibility,
+    structure,
+    goal_oriented,
+    follow_through,
+    deliberateness,
+    self_assurance,
+    friendliness,
+    sociability,
+    vitality,
+    influence,
+    take_charge,
+    tact,
+    worry,
+    emotion,
+    crisis_response,
+    recovery_time,
+    intensity,
+    creativity,
+    learning,
+    change_response,
+    detail_orientation,
+    decisiveness,
+    mobility,
+    d_agreeableness,
+    d_channeling_effort,
+    d_extraversion,
+    d_nature_of_reaction,
+    d_originality,
+    creator_path_engagement_style,
+    creator_path_engagement_style,
+    creator_path_interpersonal_style,
+    creator_path_work_style,
+    creator_path_overall_score,
+    producer_path_self_concept_style,
+    producer_path_engagement_style,
+    producer_path_interpersonal_style,
+    producer_path_work_style,
+    producer_path_overall_score
+  ) 
+
+# Save final dataset
+saveRDS(df_people_gold, 
+        file = "Data/Gold/df_people_gold_demo.rds")
+
+str(df_people_gold)
+
+```

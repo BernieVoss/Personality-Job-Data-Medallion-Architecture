@@ -1,0 +1,438 @@
+---
+title: "EDA Demo"
+author: N Solutions - Voss
+output: 
+  html_document:
+    toc: TRUE
+    code_folding: "hide"
+date: "2024-12-11"
+---
+## Data Preparation
+### Libraries
+```{r Libraries, message = FALSE}
+#library(tidyverse)
+#library(readxl)
+#library(readr)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tibble)
+#library(janitor)
+library(broom)       # For tidying test results
+library(rstatix)     # For assumption tests and effect sizes
+library(car)         # For Levene's Test
+library(purrr)
+library(knitr)
+#library(lubridate)
+library(kableExtra)
+library(ordinal)
+```
+
+### Pull in Data, Clean, Transform
+
+Data were combined from several spreadsheets:
+1. PeopleBest Assessment Excel Spreadsheet with trait and competency scores.
+    Most recent scores were used for analysis as predictors of outcome variables.
+2. SAP Employee file with general information updated monthly. This was used to
+    create a bridge table to link PeopleBest records to Employee data.
+3. Turnover Excel Spreadsheet that contains detailed turnover information,
+    including multiple categorical data points. These data were used as an
+    outcome variable to be examined. Turnover was defined as having a Choice
+    value of "Involuntary" and a "Terminated" Term Type. If any records met 
+    the criteria for Turnover but was also listed as "Active" in the SAP 
+    Employee file, a table is presented with the EE info below.
+4. Performance & Potential Excel Spreadsheet with manager ratings.These data
+    were used as an outcome variable to be examined. The most recent rating
+    was used as the outcome.
+
+```{r defining_a_theme, echo = FALSE}
+# Better to define your own function than to always type the same stuff
+windowsFonts(
+  Bookman = windowsFont("Bookman Old Style")
+)
+
+theme_clean <- function(){
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Bookman", color = "gray25"),
+    plot.subtitle = element_text(size = 12),
+    plot.caption = element_text(color = "gray30"),
+    plot.background = element_rect(fill = "gray80"),
+    panel.background = element_rect(fill = "gray80"),
+    plot.margin = unit(c(5, 10, 5, 10), units = "mm"),
+    panel.grid = element_blank()
+  )
+}
+```  
+
+```{r Data Wrangling, message = FALSE, warning= FALSE}
+# Load cleaned data
+df_people_gold <- 
+  readRDS("Data/Gold/df_people_gold_demo.rds") 
+
+df_nested <-
+  df_people_gold |>
+  pivot_longer(invol_group:hi_po,
+               names_to = "criterion_name",
+               values_to = "criterion_value",
+               values_drop_na = TRUE)|>
+  mutate(
+    criterion_name = if_else(criterion_name == "invol_group", 
+                             "Turnover", 
+                             if_else(criterion_name == "hi_perf", 
+                                     "Performance", 
+                                     "Potential"))) |>
+  nest(-criterion_name)
+
+```
+
+
+
+## Descriptive Statistics
+### Personality
+
+``` {r OCEAN Descriptive Stats, message=FALSE}
+
+df_people_gold |>
+  select(starts_with("d_")) |>
+  rename_with(~ str_remove(., "^d_"), starts_with("d_")) |>
+  rename_with(~ str_to_title(str_replace_all(., "_", " "))) |>
+  summarize(across(
+    everything(),
+    list(
+      n = ~ sum(!is.na(.)),
+      Mean = ~ round(mean(., na.rm = TRUE), 2),
+      sd = ~ round(sd(., na.rm = TRUE), 2)
+    )
+  )) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "Metric",
+    values_to = "Value"
+  ) |>
+  separate( # Properly split names
+    Metric, 
+    into = c("Variable", "Statistic"), 
+    sep = "_", 
+    extra = "merge"
+    ) |>
+  pivot_wider(
+    names_from = "Statistic",
+    values_from = "Value"
+  ) |>
+  kbl(caption = "Summary Table: Sample Size, Mean, and Standard Deviation") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+  
+
+
+
+```
+
+
+``` {r Turnover Desc Visuals, message = FALSE}
+
+ 
+ggplot(df_people_gold, aes(x = term_type, fill = choice)) +
+   geom_bar(position = "stack") +
+   labs(title = "Turnover Types by Choice", 
+        x = "Turnover Type", 
+        y = "Count",
+        fill = "Choice") +
+   theme_clean() +
+  scale_fill_brewer(palette = "Dark2")
+
+
+```
+
+``` {r Turnover Matrix}
+
+# Add a column name for rownames
+term_table_with_margins <- table(df_people_gold$choice, df_people_gold$term_type, exclude = NULL) |>
+  addmargins() |>
+  as.data.frame.matrix()|>
+  rownames_to_column(var = "Choice") |>
+  rename(Total = Sum) |>
+  mutate(Choice = if_else(Choice == "Sum", "Total", Choice))
+
+kbl(term_table_with_margins, 
+    row.names = TRUE, 
+    caption = "Frequencies: Termination Choice & Type",
+    table.attr = 'style="font-family: Bookman, serif;"') |>
+  add_header_above(c(" " = 1, "Reason" = ncol(term_table_with_margins))) |>
+  kable_styling(bootstrap_options = c("striped", "hover"))|>
+  row_spec(nrow(term_table_with_margins), bold = TRUE)|>
+  row_spec(nrow(term_table_with_margins) - 1, extra_css = "border-bottom: 1px solid black;")
+
+
+```
+
+``` {r Performance Frequency Distribution, message = FALSE}
+
+df_performance_potential <-
+  df_people_gold |>
+  select(overall_performance_rating,
+         overall_potential_rating,
+         hi_perf,
+         hi_po) |>
+  filter(!is.na(overall_performance_rating)
+         & !is.na(overall_potential_rating))
+
+ggplot(df_performance_potential, aes(x = overall_performance_rating)) +
+  geom_bar(position = "stack") +
+  labs(x = "Overall Performance Rating",
+       y = "Count",
+       title = "Performance Rating Frequency Distribution") +
+  theme_clean()
+
+```
+``` {r Potential Frequency Distribution, message = FALSE}
+
+ggplot(df_performance_potential, aes(x = overall_potential_rating)) +
+  geom_bar(position = "stack") +
+  labs(x = "Overall Potential Rating",
+       y = "Count",
+       title = "Potential Rating Frequency Distribution") +
+  theme_clean()
+
+```
+
+```{r Performance & Potential Rating Matrix}
+
+# Add a column name for rownames
+perf_pot_table_with_margins <- table(df_performance_potential$hi_perf, df_performance_potential$hi_po, exclude = NULL) |>
+  addmargins() |>
+  as.data.frame.matrix()|>
+  rownames_to_column(var = "Performance") |>
+  rename(Low = `0`,
+         High = `1`,
+         Total = Sum) |>
+  mutate(Performance = if_else(Performance == "Sum",
+                               "Total",
+                               if_else(Performance == 0, 
+                                       "Low", 
+                                       "High")))
+
+kbl(perf_pot_table_with_margins, 
+    #row.names = TRUE, 
+    caption = "Frequencies: Performance and Potential",
+    table.attr = 'style="font-family: Bookman, serif;"') |>
+  add_header_above(c(" " = 1, "Potential" = 2, " " = 1)) |>
+  kable_styling(bootstrap_options = c("striped", "hover"))|>
+  row_spec(nrow(perf_pot_table_with_margins), bold = TRUE)|>
+  row_spec(nrow(perf_pot_table_with_margins) - 1, extra_css = "border-bottom: 1px solid black;")
+```
+
+## Questions
+
+Initial analyses will use a correlation coefficient to evaluate whether there is
+a relationship between predictors (based on traits) and criteria (i.e.,
+Turnover, Performance, Potential). Correlation coeffients can range between -1 
+and 1, indicating the strength and direction of the association between two 
+variables. Below is a reference on how to interpret correlation coefficients,
+provided by Rosenthal (1996).
+
+![caption](Rosenthal 1996 Correlation Strengths.png)
+
+
+### 1. For involuntary terminations, are there any correlations back to either Job Fit or the common traits these individuals had on their pre-hire assessment?
+
+```{r Criteria Correlations, message = FALSE, results='hide'}
+
+
+df_nested_results <- df_nested %>%
+  # Use map2 to iterate over both the data and the criterion_name columns in parallel
+  mutate(cor_summary = map2(data, criterion_name, ~ {
+    # .x is the nested data frame, .y is the criterion_name
+    df_data <- .x %>%
+      select(empathy:criterion_value)
+
+    # Perform correlation tests for all variables except 'criterion_value'
+    res <- map_df(setdiff(names(df_data), "criterion_value"), function(var) {
+      test_res <- cor.test(df_data[[var]], df_data[["criterion_value"]])
+      tibble(
+        Var = var,
+        r = round(test_res$estimate, 3),
+        p = round(test_res$p.value, 3)
+      )
+    }) |>
+      #filter(p < .11) |>
+      slice_max(order_by = abs(r), n = 15)
+    
+    # Return a list with the results and the criterion_name
+    list(
+      results = res,
+      criterion_name = .y
+    )
+  })) %>%
+  # Add two new columns:
+  # 1) clean_results_df: a cleaned, regular data frame
+  # 2) kable_table: a formatted kable table from the cleaned data frame
+  mutate(
+    clean_results_df = map(cor_summary, ~ {
+      .x$results |>
+        mutate(Var = str_to_title(str_replace_all(Var, "_", " "))) |>
+        arrange(desc(abs(r)))
+    }),
+    kable_table = map2(cor_summary, clean_results_df, ~ {
+      crit_name <- .x$criterion_name
+      .y %>%
+        kable(format = "html", caption = paste("Criterion:", crit_name)) %>%
+        kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+    })
+  )
+
+# Now df_nested_results has:
+# - cor_summary: Original list with results and criterion_name
+# - clean_results_df: Regular data frame with cleaned variable names, filtered, and sorted results
+# - kable_table: HTML kable tables for reporting
+# Now df_nested_results$kable_table contains an HTML kable for each record,
+# with the criterion_name used in the caption only.
+df_nested_results$kable_table
+
+```
+
+
+Then, the plot is produced. 
+
+
+
+```{r Nested Correlation Visuals}
+
+df_nested_plots <- df_nested_results %>%
+  mutate(plot = map2(clean_results_df, criterion_name, ~ {
+    corrs <- .x %>%
+      mutate(sig = if_else(p < 0.05, "Significant", "Not Significant"))
+
+    ggplot(corrs, aes(x = reorder(Var, abs(r)), y = r, fill = sig)) +
+      geom_col() +
+      coord_flip() +
+      geom_text(aes(label = round(r, 2), hjust = if_else(r < 0, 1.1, -0.1)), color = "black") +
+      scale_fill_manual(values = c("Significant" = "#4CAF50", "Not Significant" = "#BDBDBD")) +
+      labs(
+        title = paste("Top 15 Correlations with ", .y),
+        x = "Variable",
+        y = "Correlation (r)",
+        fill = "Significance"
+      ) +
+      theme_clean() +
+      theme(
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.title.y = element_blank(),
+        plot.margin = margin(10, 30, 10, 30)
+      ) +
+      scale_y_continuous(expand = expansion(mult = 0.2))
+  }))
+
+
+
+```
+
+```{r Correlation Visuals}
+# df_nested_plots now contains a column "plot" with a ggplot for each row.
+# You can print them individually:
+print(df_nested_plots$plot[[1]])
+print(df_nested_plots$plot[[2]])
+print(df_nested_plots$plot[[3]])
+```
+
+## Testing
+
+
+```{r Nested Correlation Visuals2}
+
+df_nested_plots <- df_nested_results %>%
+  mutate(plot = map2(clean_results_df, criterion_name, ~ {
+    corrs <- .x %>%
+      mutate(
+        category = case_when(
+          p < 0.05 & r > 0 ~ "Significant Positive",
+          p < 0.05 & r < 0 ~ "Significant Negative",
+          TRUE ~ "Not Significant"
+        )
+      )
+    
+    # Order variables by absolute correlation
+    corrs <- corrs %>%
+      arrange(abs(r)) %>%
+      mutate(Var = factor(Var, levels = unique(Var)))
+    
+    # Convert factor to numeric for fine-grained vertical spacing
+    # We'll place lines at integer y-values
+    corrs <- corrs %>%
+      mutate(y = as.numeric(Var))
+    
+    # Compute start and end points for symmetrical arrows centered at x=0
+    # The arrow length = abs(r), so half-length = abs(r)/2
+    # Both positive and negative correlations get the same segment, 
+    # direction indicated by the order of start_x and end_x
+    corrs <- corrs %>%
+      mutate(
+        half_len = abs(r)/2,
+        start_x = -half_len,
+        end_x = half_len,
+        # For positive correlations, arrow points from left to right
+        # For negative correlations, arrow points from right to left
+        # We'll flip start and end for negative correlations
+        start_x = if_else(r < 0, half_len, start_x),
+        end_x = if_else(r < 0, -half_len, end_x)
+      )
+
+    max_y <- max(corrs$y)
+    max_r <- max(abs(corrs$r))
+    
+    ggplot(corrs, aes(y = y)) +
+      # Draw the arrow lines
+      geom_segment(
+        aes(x = start_x, xend = end_x, yend = y, color = category),
+        arrow = arrow(length = unit(0.2, "cm"), type = "open"),
+        linewidth = 2
+      ) +
+      # Add labels above each arrow line (at y + 0.3 for clarity)
+      geom_text(
+        aes(x = 0, y = y + 0.6, label = paste0(Var, ": ", round(r, 2))),
+        size = 3.5,
+        color = "black",
+        family = "Bookman"
+      ) +
+      # Set custom colors for categories
+      scale_color_manual(values = c(
+        "Significant Positive" = "darkblue",
+        "Significant Negative" = "#B86E01",
+        "Not Significant" = "darkgrey"
+      )) +
+      labs(
+        title = paste("Top 15 Correlations with", .y),
+        x = NULL,
+        y = NULL,
+        color = "Significance"
+      ) +
+      theme_clean() +
+      theme(
+        text = element_text(family = "Bookman"),
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        plot.margin = margin(20, 30, 20, 30)
+      ) +
+      # Add horizontal space so arrows won't be cut off
+      #scale_x_continuous(limits = c(-max_r/2 - 0.1, max_r/2 + 0.1), expand = c(0,0)) +
+      # Add vertical space to top and bottom
+      # We add 1 above and below the range for extra room
+      scale_y_continuous(limits = c(0, max_y + 1.5), expand = c(0,0))
+  }))
+
+
+
+
+
+
+```
+
+```{r Correlation Visuals2}
+# df_nested_plots now contains a column "plot" with a ggplot for each row.
+# You can print them individually:
+print(df_nested_plots$plot[[1]])
+print(df_nested_plots$plot[[2]])
+print(df_nested_plots$plot[[3]])
+```
